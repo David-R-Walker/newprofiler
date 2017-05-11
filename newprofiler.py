@@ -5,7 +5,7 @@
 #   [x] Record only functions in StackLines
 #   [ ] Handle per-line hotspots as separate structure (not nested) - ?
 #   [ ] Handle timeline as separate structure
-#   [ ] Use unique stack IDs to dedupe stack tuples
+#   [x] Use unique stack IDs to dedupe stack tuples
 #   [ ] Merge profile data method
 #   [ ] add custom metadata values to profile data (e.g. url, op, user id) for filtering / grouping
 #   [ ] filter/merge profile data by metadata
@@ -432,6 +432,7 @@ class RawProfileData(object):
 
     def __init__(self):
         self.stack_line_id_map = {}     # Maps StackLines to IDs
+        self.stack_tuple_id_map = {}    # Map tuples of StackLine IDs to IDs
         self.stack_data = {}            # Maps stack ID tuples to SampleData
         self.time_running = 0.0         # Total amount of time sampling has been active
         self.total_ticks = 0            # Total number of samples we've taken
@@ -444,10 +445,15 @@ class RawProfileData(object):
             for stack_line in stack_list
         )
 
-        if stack_tuple not in self.stack_data:
-            sample_data = self.stack_data[stack_tuple] = SampleData()
+        stack_tuple_id = self.stack_tuple_id_map.setdefault(
+            stack_tuple,
+            len(self.stack_tuple_id_map),
+        )
+
+        if stack_tuple_id in self.stack_data:
+            sample_data = self.stack_data[stack_tuple_id]
         else:
-            sample_data = self.stack_data[stack_tuple]
+            sample_data = self.stack_data[stack_tuple_id] = SampleData()
 
         sample_data.rtime += rtime
         sample_data.cputime += cputime
@@ -465,21 +471,27 @@ class RawProfileData(object):
         )
         print '    Ordered by: %s\n' % sort
         # Invert stack -> ID map
-        stack_map = dict([
+        stack_line_map = dict([
             (v, k)
             for k, v
             in self.stack_line_id_map.items()
         ])
+        stack_map = dict([
+            (v, k)
+            for k, v
+            in self.stack_tuple_id_map.items()
+        ])
         lines = [
-            (getattr(sample_data, sort), stack, sample_data)
-            for stack, sample_data
+            (getattr(sample_data, sort), stack_id, sample_data)
+            for stack_id, sample_data
             in self.stack_data.items()
         ]
         lines.sort()
         lines.reverse()
         print '      ticks    rtime  cputime filename:lineno(function)'
-        for _, stack, sample_data in lines:
-            stack_line = stack_map[stack[0]]
+        for _, stack_id, sample_data in lines:
+            stack = stack_map[stack_id]
+            stack_line = stack_line_map[stack[0]]
             print '    %7d % 8.3f % 8.3f %s:%d(%s) : %r' % (
                 sample_data.ticks,
                 sample_data.rtime,
