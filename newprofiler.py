@@ -1,7 +1,7 @@
 # Python Profiler v3
 # Copyright (c) 2015-2017 David R Walker
 
-# Todo:
+# TODO:
 #   [x] Record only functions in StackLines
 #   [ ] Handle per-line hotspots as separate structure (not nested) - ?
 #   [ ] Handle timeline as separate structure
@@ -120,7 +120,6 @@ class ThreadIntervalScheduler(IntervalScheduler):
         def thread_func():
             while not self._event.is_set():
                 self._event.wait(timeout=self.get_next_interval())
-                print 'tick'
                 self.tick(None)
         self._thread = threading.Thread(target=thread_func, name='profiler')
         self._thread.daemon = True
