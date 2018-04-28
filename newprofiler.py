@@ -1,12 +1,12 @@
 # Python Profiler v3
-# Copyright (c) 2015-2017 David R Walker
+# Copyright (c) 2015-2018 David R Walker
 
 # TODO:
 #   [x] Record only functions in StackLines
 #   [ ] Handle per-line hotspots as separate structure (not nested) - ?
 #   [ ] Handle timeline as separate structure
 #   [x] Use unique stack IDs to dedupe stack tuples
-#   [ ] Merge profile data method
+#   [x] Merge profile data method
 #   [ ] add custom metadata values to profile data (e.g. url, op, user id) for filtering / grouping
 #   [ ] filter/merge profile data by metadata
 #   [x] Expose randomize parameter for stochastic sampling
@@ -26,7 +26,7 @@
 #   [ ] Test performance / optimize on various platforms
 #   [ ] Serialize (+append?) to file (lock file?)
 #   [ ] Load from file
-#   [ ] HTML5 exporter with drill-down
+#   [ ] HTML5 exporter with drill-down / (or could export json/xml and rely on existing viewers)
 #   [ ] Import/exporter framework
 #   [ ] Export to standard profiler formats (e.g. python, callgrind, firefox ThreadProfile json)
 #   [ ] Make Python 3 compatible
@@ -348,10 +348,10 @@ class LinuxPThreadPlatform(ThreadPlatform):
         clock_gettime.argtypes = [clockid_t, ctypes.POINTER(timespec)]
         clock_gettime.restype = ctypes.c_int
 
-        def get_current_thread_id():
+        def get_current_thread_id(self):
             return pthread_self()
 
-        def get_thread_cpu_time(thread_id=None):
+        def get_thread_cpu_time(self, thread_id=None):
             if thread_id is None:
                 thread_id = pthread_self()
 
@@ -377,14 +377,14 @@ class LinuxPThreadPlatform(ThreadPlatform):
     def get_current_thread_id(self):
         return self._get_current_thread_id()
 
-    def get_thread_cpu_time(thread_id=None):
+    def get_thread_cpu_time(self, thread_id=None):
         return self._get_thread_cpu_time(thread_id)
    
 
 import sys
-if sys.platform == 'darwin':
+if sys.platform.startswith('darwin'):
     thread_platform = MacPThreadPlatform()
-elif sys.platform == 'linux':
+elif sys.platform.startswith('linux'):
     thread_platform = LinuxPThreadPlatform()
 # TODO: Windows support
 else:
@@ -428,14 +428,57 @@ class SampleData(object):
     def __repr__(self):
         return str(self)
 
+    def merge(self, other_data):
+        self.rtime += other_data.rtime
+        self.cputime += other_data.cputime
+        self.ticks += other_data.ticks
+
+
 class RawProfileData(object):
 
     def __init__(self):
         self.stack_line_id_map = {}     # Maps StackLines to IDs
         self.stack_tuple_id_map = {}    # Map tuples of StackLine IDs to IDs
-        self.stack_data = {}            # Maps stack ID tuples to SampleData
+        self.stack_data = {}            # Maps stack tuple IDs to SampleData
         self.time_running = 0.0         # Total amount of time sampling has been active
         self.total_ticks = 0            # Total number of samples we've taken
+
+    def merge(self, other_data):
+        assert isinstance(other_data, RawProfileData)
+
+        # Merge stack lines, reusing our IDs where possible
+        trans_line = {}
+        for stack_line, old_id in other_data.stack_line_id_map.items():
+            trans_line[old_id] = self.stack_line_id_map.setdefault(
+                stack_line,
+                len(self.stack_line_id_map),
+            )
+
+        # Merge stack tuples, translating stack line IDs
+        trans_tuple = {}
+        for old_stack_tuple, old_tuple_id in other_data.stack_tuple_id_map.items():
+            new_tuple = tuple([
+                trans_line[old_line_id]
+                for old_line_id
+                in old_stack_tuple
+            ])
+            trans_tuple[old_tuple_id] = self.stack_tuple_id_map.setdefault(
+                new_tuple,
+                len(self.stack_tuple_id_map),
+            )
+        
+        # Merge sample data, translating stack tuple IDs to use new IDs
+        for other_stack_tuple_id, other_sample_data in other_data.stack_data.items():
+            new_tuple_id = trans_tuple[other_stack_tuple_id]
+            if new_tuple_id in self.stack_data:
+                sample_data = self.stack_data[new_tuple_id]
+            else:
+                self.stack_data[new_tuple_id] = sample_data = SampleData()
+            sample_data.merge(other_sample_data)
+
+        # Merge totals
+        self.time_running += other_data.time_running
+        self.total_ticks += other_data.total_ticks
 
     def add_sample_data(self, stack_list, rtime, cputime, ticks):
         sm = self.stack_line_id_map
@@ -623,6 +666,8 @@ class Profiler(object):
         self._profile_data.time_running += time.time() - self._start_time
         self._start_time = 0.0
 
+    def get_profile_data(self):
+        return self._profile_data
 
 
 def busy(rate=100):
