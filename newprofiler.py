@@ -3,8 +3,9 @@
 
 # TODO:
 #   [x] Record only functions in StackLines
+#   [ ] Option to track individual lines within call stacks - ?
 #   [ ] Handle per-line hotspots as separate structure (not nested) - ?
-#   [ ] Handle timeline as separate structure
+#   [ ] Handle timeline as separate structure [ (timestamp, sample_data), ... ]
 #   [x] Use unique stack IDs to dedupe stack tuples
 #   [x] Merge profile data method
 #   [ ] add custom metadata values to profile data (e.g. url, op, user id) for filtering / grouping
@@ -38,6 +39,7 @@
 #           - breaks sleep/timeout behaviour in programs - provide optional monkey patches?
 #           - or just accept that signals break waits, and is fixed eventually by PEP475
 #               ('serious' code should be handling EINTR anyway?)
+#           - or encourage running profiled code in separate thread
 #   [ ] Figure out how to avoid having to patch thread, wherever possible
 #         - maybe spawn a test thread on module import to detect if thread IDs match ?
 #   [x] Make interval private on profiler (or don't store)
@@ -601,11 +603,15 @@ class Profiler(object):
         sample_time = time.time()
         current_frames = sys._current_frames()
         current_thread = thread.get_ident()
+
+        # TODO: find cheaper way to get thread names
+        # Maybe merge all unnamed (Thread-N) threads together?
+        thread_names = dict([(t.ident, t.getName()) for t in threading.enumerate()])
+
         for thread_ident, frame in current_frames.items():
             if thread_ident == current_thread:
                 frame = _interrupted_frame
             if frame is not None:
-                # 1.7 %
                 stack = [stack_line_from_frame(frame)]
                 if self.collect_stacks:
                     frame = frame.f_back
@@ -613,18 +619,15 @@ class Profiler(object):
                         stack.append(stack_line_from_frame(frame))
                         frame = frame.f_back
 
-                stack.append(StackLine('thread', str(thread_ident), '', 0, None))  # todo: include thread name?
-                # todo: include PID?
+                stack.append(StackLine('thread', thread_names.get(thread_ident, 'other'), '', 0, None))
                 # todo: include custom metadata/labels?
 
-                # 2.0 %
                 if thread_ident in self._thread_clocks:
                     thread_clock = self._thread_clocks[thread_ident]
                     cputime = thread_platform.get_thread_cpu_time(thread_ident)
                 else:
                     thread_clock = self._thread_clocks[thread_ident] = ThreadClock()
                     cputime = thread_platform.get_thread_cpu_time(thread_ident)
-                # ~5.5%
                 self._profile_data.add_sample_data(
                     stack,
                     sample_time - self.last_tick,
@@ -639,7 +642,6 @@ class Profiler(object):
         self.last_tick = sample_time
         self.total_samples += 1
         self.sampling_time += time.time() - sample_time
-
 
     def start(self):
         import threading
