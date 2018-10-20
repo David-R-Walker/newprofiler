@@ -350,10 +350,10 @@ class LinuxPThreadPlatform(ThreadPlatform):
         clock_gettime.argtypes = [clockid_t, ctypes.POINTER(timespec)]
         clock_gettime.restype = ctypes.c_int
 
-        def get_current_thread_id(self):
+        def get_current_thread_id():
             return pthread_self()
 
-        def get_thread_cpu_time(self, thread_id=None):
+        def get_thread_cpu_time(thread_id=None):
             if thread_id is None:
                 thread_id = pthread_self()
 
@@ -406,8 +406,10 @@ import collections
 
 StackLine = collections.namedtuple('StackLine', ['type', 'name', 'file', 'line', 'data'])
 
-def stack_line_from_frame(frame, stype='func', data=None):
+def stack_line_from_frame(frame, stype='call', data=None):
     code = frame.f_code
+    if stype == 'line':
+        return StackLine(stype, code.co_name, code.co_filename, frame.f_lineno, data)
     return StackLine(stype, code.co_name, code.co_filename, code.co_firstlineno, data)
 
 
@@ -415,10 +417,16 @@ class SampleData(object):
 
     __slots__ = ['rtime', 'cputime', 'ticks']
 
-    def __init__(self):
-        self.rtime = 0.0        # Real / wall-clock time
-        self.cputime = 0.0      # User CPU time (single thread)
-        self.ticks = 0          # Actual number of samples
+    def __getstate__(self):
+        return (self.rtime, self.cputime, self.ticks)
+
+    def __setstate__(self, data):
+        self.rtime, self.cputime, self.ticks = data
+
+    def __init__(self, rtime=0.0, cputime=0.0, ticks=0):
+        self.rtime = rtime      # Real / wall-clock time
+        self.cputime = cputime  # User CPU time (single thread)
+        self.ticks = ticks      # Actual number of samples
 
     def __str__(self):
         return 'SampleData<r=%.3f, cpu=%.3f, t=%d>' % (
@@ -557,6 +565,12 @@ class ThreadClock(object):
         self.rtime = 0.0
         self.cputime = 0.0
 
+    def __getstate__(self):
+        return (self.rtime, self.cputime)
+
+    def __setstate__(self, data):
+        self.rtime, self.cputime = data
+
 
 class Profiler(object):
 
@@ -569,10 +583,14 @@ class Profiler(object):
     def __init__(
         self,
         scheduler_type='signal',        # Which scheduler to use
-        collect_stacks=True,            # Collect full call-tree data?
+        collect_lines=True,             # Collect current line data?
+        collect_calls=True,             # Collect call data?
+        collect_stacks=True,            # Collect full call-tree data? (implies collect_calls)
         rate=None,
         stochastic=False,
     ):
+        self.collect_lines = collect_lines
+        self.collect_calls = collect_calls or collect_stacks
         self.collect_stacks = collect_stacks
         assert (
             scheduler_type in self._scheduler_map
@@ -612,12 +630,16 @@ class Profiler(object):
             if thread_ident == current_thread:
                 frame = _interrupted_frame
             if frame is not None:
-                stack = [stack_line_from_frame(frame)]
-                if self.collect_stacks:
-                    frame = frame.f_back
-                    while frame is not None:
-                        stack.append(stack_line_from_frame(frame))
+                stack = []
+                if self.collect_lines:
+                    stack.append(stack_line_from_frame(frame, stype='line'))
+                if self.collect_calls:
+                    stack.append(stack_line_from_frame(frame))
+                    if self.collect_stacks:
                         frame = frame.f_back
+                        while frame is not None:
+                            stack.append(stack_line_from_frame(frame))
+                            frame = frame.f_back
 
                 stack.append(StackLine('thread', thread_names.get(thread_ident, 'other'), '', 0, None))
                 # todo: include custom metadata/labels?
@@ -635,10 +657,7 @@ class Profiler(object):
                     1
                 )
                 thread_clock.cputime = cputime
-            else:
-                self._profile_data.add_sample_data(
-                    self._empty_stack, sample_time - self.last_tick, 0.0, 1
-                )
+
         self.last_tick = sample_time
         self.total_samples += 1
         self.sampling_time += time.time() - sample_time
@@ -670,6 +689,261 @@ class Profiler(object):
 
     def get_profile_data(self):
         return self._profile_data
+
+
+class CallGraphNode(object):
+
+    def __init__(self):
+        self.stackline = None
+        self.sample_data = None
+        self.aggregate_sample_data = None
+        self.parent = None
+        self.children = {}  # Maps stackline ID to child node
+
+    def get_child_by_id(self, id):
+        return self.children.get(id)
+
+    def add_child(self, child, child_id):
+        assert isinstance(child, CallGraphNode)
+        if child_id in self.children:
+            raise ValueError('Child ID already taken', child_id)
+        self.children[child_id] = child
+        child.parent = self
+
+    def set_sample_data(self, sample_data):
+        assert self.sample_data is None
+
+        self.sample_data = sample_data
+
+        # Update aggregate data
+        ancestor = self.parent
+        while ancestor is not None:
+            if ancestor.aggregate_sample_data is None:
+                ancestor.aggregate_sample_data = SampleData()
+            ancestor.aggregate_sample_data.merge(self.sample_data)
+            ancestor = ancestor.parent
+
+    def dump(self, depth=0):
+        import linecache
+        if self.aggregate_sample_data is not None:
+            agg_ticks = ' (%r)' % self.aggregate_sample_data
+        else:
+            agg_ticks = ''
+        print '%s%s %r%s' % (
+            '  ' * depth,
+            '<%s> %s:%d(%s)' % (
+                self.stackline.type,
+                os.path.basename(self.stackline.file),
+                self.stackline.line,
+                self.stackline.name
+            ),
+            self.sample_data,
+            agg_ticks
+        ), '' if self.stackline.type != 'line' else linecache.getline(self.stackline.file, self.stackline.line).rstrip()
+        for child in self.children.values():
+            child.dump(depth=depth + 1)
+
+
+class CallGraph(object):
+
+    # Context-sensitive call graph (DAG)
+    def __init__(self, profile_data):
+        self.profile_data = profile_data
+        self.root = self._build_graph_from_profile_data(profile_data)
+
+    def get_profile_data(self):
+        return self.profile_data
+
+    def _build_graph_from_profile_data(self, profile_data):
+        stack_lines = {}
+        for line, line_id in profile_data.stack_line_id_map.items():
+            assert line_id not in stack_lines, 'Ambiguous stack line ID'
+            stack_lines[line_id] = line
+
+        stacks = {}
+        for stack, stack_id in profile_data.stack_tuple_id_map.items():
+            assert stack_id not in stacks, 'Ambiguous stack tuple ID'
+            stacks[stack_id] = stack
+
+        root = CallGraphNode()
+        root.stackline = StackLine('root', 'Root', '', 0, None)
+        root.sample_data = None
+
+        for stack_id, sample_data in profile_data.stack_data.items():
+            stack_tuple = stacks[stack_id]
+            node = root
+            for stack_line_id in reversed(stack_tuple):
+                child = node.get_child_by_id(stack_line_id)
+                if child is None:
+                    child = CallGraphNode()
+                    child.stackline = stack_lines[stack_line_id]
+                    node.add_child(child, stack_line_id)
+                node = child
+            node.set_sample_data(sample_data)
+
+        return root
+
+
+class Exporter(object):
+
+    def __init__(self, call_graph, file):
+        assert isinstance(call_graph, CallGraph)
+        self.call_graph = call_graph
+        if type(file) is str:
+            self.file = open(file, 'w')
+        else:
+            self.file = file
+        self.init_exporter()
+
+    def init_exporter(self):
+        pass
+
+    def export(self):
+        raise NotImplementedError()
+
+
+class HTMLExporter(Exporter):
+
+    html_header = """
+        <html>
+            <head>
+                <style>
+                    table {
+                        width: 100%%;
+                        border: 1px solid black;
+                    }
+                    td {
+                        border: 1px solid black;
+                    }
+                </style>
+            </head>
+            <body>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>&nbsp;</th>
+                            <th colspan="3">Tree</th>
+                            <th colspan="3">Node</th>
+                            <th>&nbsp;</th>
+                        </tr>
+                        <tr>
+                            <th>Call Graph</th>
+                            <th>rtime</th>
+                            <th>cputime</th>
+                            <th>ticks</th>
+                            <th>rtime</th>
+                            <th>cputime</th>
+                            <th>ticks</th>
+                            <th>Code</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <h1>Context-Sensitive Call Graph</h1>
+                        <p>Captured %d samples in %.3f s.</p>
+    """
+
+    row_template = """
+        <tr id="%(row_id)s">
+            <td>%(node)s</td>
+            %(aggregate_sample_data)s
+            %(node_sample_data)s
+            <td><pre><code>%(code)s</code></pre></td>
+        </tr>
+    """
+
+    sample_data_template = """
+        <td>%(rtime).3f</td>
+        <td>%(cputime).3f</td>
+        <td>%(ticks)d</td>
+    """
+
+    empty_sample_data = """
+        <td colspan="3"></td>
+    """
+
+    html_footer = """
+                    </tbody>
+                </table>
+            </body>
+        </html>
+    """
+
+    def init_exporter(self):
+        self._count = 0
+
+    def export(self):
+        profile_data = self.call_graph.get_profile_data()
+        self.file.write(
+            self.html_header % (
+                profile_data.total_ticks,
+                profile_data.time_running,
+            )
+        )
+        
+        self._export_node(self.call_graph.root)
+
+        self.file.write(
+            self.html_footer
+        )
+
+    def _get_uid(self):
+        self._count += 1
+        return self._count
+
+    def _export_node(self, node, _level=0):
+        import linecache
+
+        assert isinstance(node, CallGraphNode), node
+
+        row_data = {
+            'total_rtime': 0.0,
+            'total_cputime': 0.0,
+            'total_ticks': 0,
+            'rtime': 0.0,
+            'cputime': 0.0,
+            'ticks': 0,
+        }
+
+        row_data['row_id'] = 'node_%d' % self._get_uid()
+
+        row_data['node'] = '%s&lt;%s&gt; %s:%d(%s)' % (
+            '&nbsp;&nbsp;' * _level,
+            node.stackline.type,
+            os.path.basename(node.stackline.file),
+            node.stackline.line,
+            node.stackline.name
+        )
+
+        if node.aggregate_sample_data is not None:
+            row_data['aggregate_sample_data'] = self.sample_data_template % {
+                'rtime': node.aggregate_sample_data.rtime,
+                'cputime': node.aggregate_sample_data.cputime,
+                'ticks': node.aggregate_sample_data.ticks,
+            }
+        else:
+            row_data['aggregate_sample_data'] = self.empty_sample_data
+
+        if node.sample_data is not None:
+            row_data['node_sample_data'] = self.sample_data_template % {
+                'rtime': node.sample_data.rtime,
+                'cputime': node.sample_data.cputime,
+                'ticks': node.sample_data.ticks,
+            }
+        else:
+            row_data['node_sample_data'] = self.empty_sample_data
+        if node.stackline.type == 'line':
+            row_data['code'] = linecache.getline(
+                node.stackline.file,
+                node.stackline.line,
+            ).rstrip()
+        else:
+            row_data['code'] = '' 
+
+        self.file.write(self.row_template % row_data)
+
+        # TODO: apply sort criterion here
+        for child in node.children.values():
+            self._export_node(child, _level=_level + 1)
 
 
 def busy(rate=100):
