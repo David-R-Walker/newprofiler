@@ -715,7 +715,11 @@ class CallGraphNode(object):
 
         self.sample_data = sample_data
 
-        # Update aggregate data
+        # Update current node's aggregate data
+        self.aggregate_sample_data = SampleData()
+        self.aggregate_sample_data.merge(self.sample_data)
+
+        # Update parent node's aggregate data
         ancestor = self.parent
         while ancestor is not None:
             if ancestor.aggregate_sample_data is None:
