@@ -812,62 +812,108 @@ class HTMLExporter(Exporter):
         <html>
             <head>
                 <style>
-                    table {
-                        width: 100%%;
-                        border: 1px solid black;
+                    .call-graph {
+                        font-family: consolas, sans-serif;
+                        font-size: 10pt;
                     }
-                    td {
+                    ul .call-graph ul, .call-graph li, .call-graph pre, .call-graph code {
+                        margin-top: 2px;
+                        margin-bottom: 2px;
+                        padding-top: 0;
+                        padding-bottom: 0;
+                    }
+                    .call-graph ul {
+                        list-style: none;
+                        padding-left: 10pt;
+                    }
+                    .call-graph code {
+                        display: inline-block;
+                    }
+                    .hidden-node {
+                        display: none;
+                    }
+                    .internal-node {
+                        cursor: pointer;
+                        margin-top: 2px;
+                        margin-bottom: 2px;
+                        font-weight: bold;
+                    }
+                    .call-graph ul {
+                        border-left: 1px solid blue;
+                    }
+                    .call-graph ul:hover {
+                        border-left: 1px solid lightgray;
+                    }
+                    .internal-node.open-node::before {
+                        content: "\\0025bc";
+                    }
+                    .internal-node.closed-node::before {
+                        content: "\\0025b6";
+                    }
+                    .leaf-node {
+                        margin-top: 2px;
+                        margin-bottom: 2px;
+                    }
+                    .sample-section {
+                        display: inline-block;
+                        float: right;
+                        width: 20%%;
+                        position: absolute;
+                        right: 0;
                         border: 1px solid black;
                     }
                 </style>
+                <script>
+                    function toggle(parent_node_id, child_node_id) {
+                        parent_node = document.getElementById(parent_node_id);
+                        child_node = document.getElementById(child_node_id);
+                        if (child_node.classList.contains('hidden-node')) {
+                            parent_node.classList.replace('closed-node', 'open-node');
+                        } else {
+                            parent_node.classList.replace('open-node', 'closed-node');
+                        }
+                        child_node.classList.toggle('hidden-node');
+                    }
+                </script>
             </head>
             <body>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>&nbsp;</th>
-                            <th colspan="3">Tree</th>
-                            <th colspan="3">Node</th>
-                            <th>&nbsp;</th>
-                        </tr>
-                        <tr>
-                            <th>Call Graph</th>
-                            <th>rtime</th>
-                            <th>cputime</th>
-                            <th>ticks</th>
-                            <th>rtime</th>
-                            <th>cputime</th>
-                            <th>ticks</th>
-                            <th>Code</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <h1>Context-Sensitive Call Graph</h1>
-                        <p>Captured %d samples in %.3f s.</p>
+                <div class="call-graph">
+                    <h1>Context-Sensitive Call Graph</h1>
+                    <p>Captured %d samples in %.3f s.</p>
+                    <ul>
     """
 
     row_template = """
-        <tr id="%(row_id)s">
-            <td>%(node)s</td>
-            %(aggregate_sample_data)s
-            %(node_sample_data)s
-            <td><pre><code>%(code)s</code></pre></td>
-        </tr>
+        <li>
+            <p href="#" id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle('parent_%(row_id)s', 'child_%(row_id)s')">
+                %(node)s
+                <span class="sample-section">
+                %(aggregate_sample_data)s
+                %(node_sample_data)s
+                </span>
+                %(code)s
+            </p>
+            <ul id="child_%(row_id)s" class="hidden-node">
+                %(child_tree)s
+            </ul>
+        </li>
     """
 
+    code_template = "<code>%s</code>"
+
     sample_data_template = """
-        <td>%(rtime).3f</td>
-        <td>%(cputime).3f</td>
-        <td>%(ticks)d</td>
+        <span class="samplevar">%(rtime).3f</span>
+        <span class="samplevar">%(cputime).3f</span>
+        <span class="samplevar">%(ticks)d</span>
     """
 
     empty_sample_data = """
-        <td colspan="3"></td>
+        <span class="missingsample"></span>
     """
 
     html_footer = """
-                    </tbody>
-                </table>
+                    </ul>
+                </div>
             </body>
         </html>
     """
@@ -884,7 +930,9 @@ class HTMLExporter(Exporter):
             )
         )
         
-        self._export_node(self.call_graph.root)
+        self.file.write(
+            self._export_node(self.call_graph.root)
+        )
 
         self.file.write(
             self.html_footer
@@ -910,9 +958,14 @@ class HTMLExporter(Exporter):
 
         row_data['row_id'] = 'node_%d' % self._get_uid()
 
-        row_data['node'] = '%s&lt;%s&gt; %s:%d(%s)' % (
-            '&nbsp;&nbsp;' * _level,
+        if node.children:
+            row_data['node_class'] = 'internal-node'
+        else:
+            row_data['node_class'] = 'leaf-node'
+
+        row_data['node'] = '&lt;%s&gt; <span title="%s">%s</span>:%d(%s)' % (
             node.stackline.type,
+            node.stackline.file,
             os.path.basename(node.stackline.file),
             node.stackline.line,
             node.stackline.name
@@ -936,18 +989,27 @@ class HTMLExporter(Exporter):
         else:
             row_data['node_sample_data'] = self.empty_sample_data
         if node.stackline.type == 'line':
-            row_data['code'] = linecache.getline(
+            row_data['code'] = self.code_template % linecache.getline(
                 node.stackline.file,
                 node.stackline.line,
             ).rstrip()
         else:
             row_data['code'] = '' 
 
-        self.file.write(self.row_template % row_data)
+        child_tree = []
 
         # TODO: apply sort criterion here
-        for child in node.children.values():
-            self._export_node(child, _level=_level + 1)
+        for child in sorted(node.children.values(), key=lambda x: x.aggregate_sample_data.rtime, reverse=True):
+            child_tree.append(
+                self._export_node(child, _level=_level + 1)
+            )
+
+        row_data['child_tree'] = '\n'.join(child_tree)
+
+        return self.row_template % row_data
+
+
+
 
 
 def busy(rate=100):
