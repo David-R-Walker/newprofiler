@@ -716,7 +716,8 @@ class CallGraphNode(object):
         self.sample_data = sample_data
 
         # Update current node's aggregate data
-        self.aggregate_sample_data = SampleData()
+        if self.aggregate_sample_data is None:
+            self.aggregate_sample_data = SampleData()
         self.aggregate_sample_data.merge(self.sample_data)
 
         # Update parent node's aggregate data
@@ -812,22 +813,33 @@ class HTMLExporter(Exporter):
         <html>
             <head>
                 <style>
-                    .call-graph {
-                        font-family: consolas, sans-serif;
-                        font-size: 10pt;
+                    .call-graph, .call-graph code {
+                        font-family: consolas, mono;
+                        font-size: 8pt;
+                    }
+                    .call-graph ul.column-headers {
+                        margin-bottom: 0;
+                        border: 0;
+                        padding: 0;
+                        font-weight: bold;
                     }
                     ul .call-graph ul, .call-graph li, .call-graph pre, .call-graph code {
                         margin-top: 2px;
                         margin-bottom: 2px;
                         padding-top: 0;
                         padding-bottom: 0;
+                        line-height: 1.1em;
                     }
                     .call-graph ul {
                         list-style: none;
-                        padding-left: 10pt;
+                        padding-left: 10px;
+                        margin-top: 0;
                     }
                     .call-graph code {
                         display: inline-block;
+                        font-size: 8pt;
+                        margin: 0;
+                        padding: 0;
                     }
                     .hidden-node {
                         display: none;
@@ -857,10 +869,27 @@ class HTMLExporter(Exporter):
                     .sample-section {
                         display: inline-block;
                         float: right;
-                        width: 20%%;
                         position: absolute;
                         right: 0;
-                        border: 1px solid black;
+                    }
+                    .samplevar {
+                        display: inline-block;
+                        width: 6em;
+                        background-color: lightgray;
+                        padding: 0;
+                        margin: 1px;
+                        text-align: right;
+                    }
+                    .totals .samplevar {
+                        font-weight: bold;
+                    }
+                    .own .samplevar {
+                        font-weight: normal;
+                        background-color: #eeeeee;
+                        font-size: 8pt;
+                    }
+                    .missing-sample {
+                        background-color: #f7f7f7;
                     }
                 </style>
                 <script>
@@ -880,16 +909,25 @@ class HTMLExporter(Exporter):
                 <div class="call-graph">
                     <h1>Context-Sensitive Call Graph</h1>
                     <p>Captured %d samples in %.3f s.</p>
+                    <ul class="column-headers">
+                        <li>&nbsp;<span class="sample-section">
+                        <span class="samplevar">real</span><span class="samplevar">cpu</span><span class="samplevar">samples</span>
+                        </li>
+                    </ul>
                     <ul>
     """
 
     row_template = """
         <li>
             <p href="#" id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle('parent_%(row_id)s', 'child_%(row_id)s')">
+                <span title="%(row_stats)s">
+                    %(graph)s
+                    %(percent)s %%
+                    (%(total_rtime).3f s)
+                </span>
                 %(node)s
                 <span class="sample-section">
-                %(aggregate_sample_data)s
-                %(node_sample_data)s
+                <span class="totals">%(aggregate_sample_data)s</span><span class="own">%(node_sample_data)s</span>
                 </span>
                 %(code)s
             </p>
@@ -901,15 +939,17 @@ class HTMLExporter(Exporter):
 
     code_template = "<code>%s</code>"
 
-    sample_data_template = """
-        <span class="samplevar">%(rtime).3f</span>
-        <span class="samplevar">%(cputime).3f</span>
-        <span class="samplevar">%(ticks)d</span>
-    """
+    sample_data_template = (
+        '<span class="samplevar">%(rtime).3f</span>'
+        '<span class="samplevar">%(cputime).3f</span>'
+        '<span class="samplevar">%(ticks)d</span>'
+    )
 
-    empty_sample_data = """
-        <span class="missingsample"></span>
-    """
+    empty_sample_data = (
+        '<span class="samplevar missing-sample">&nbsp;</span>'
+        '<span class="samplevar missing-sample">&nbsp;</span>'
+        '<span class="samplevar missing-sample">&nbsp;</span>'
+    )
 
     html_footer = """
                     </ul>
@@ -920,6 +960,7 @@ class HTMLExporter(Exporter):
 
     def init_exporter(self):
         self._count = 0
+        self._total_rtime = self.call_graph.root.aggregate_sample_data.rtime
 
     def export(self):
         profile_data = self.call_graph.get_profile_data()
@@ -947,8 +988,21 @@ class HTMLExporter(Exporter):
 
         assert isinstance(node, CallGraphNode), node
 
+        rtime_percentage = (node.aggregate_sample_data.rtime / self._total_rtime * 100.0)
+        cpu_percentage = (node.aggregate_sample_data.cputime / self._total_rtime * 100.0)
+
         row_data = {
-            'total_rtime': 0.0,
+            'percent': '%.1f' % rtime_percentage,
+            'graph': '''
+            <span style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: red;">&nbsp;</span><span 
+                style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: blue;">&nbsp;</span>
+            ''' % (int(cpu_percentage) * 2, int(rtime_percentage - cpu_percentage) * 2),
+            'row_stats': '%.3f s real / %.3f s cpu / %d ticks' % (
+                node.aggregate_sample_data.rtime,
+                node.aggregate_sample_data.cputime,
+                node.aggregate_sample_data.ticks,
+            ),
+            'total_rtime': node.aggregate_sample_data.rtime,
             'total_cputime': 0.0,
             'total_ticks': 0,
             'rtime': 0.0,
@@ -963,22 +1017,32 @@ class HTMLExporter(Exporter):
         else:
             row_data['node_class'] = 'leaf-node'
 
-        row_data['node'] = '&lt;%s&gt; <span title="%s">%s</span>:%d(%s)' % (
-            node.stackline.type,
-            node.stackline.file,
-            os.path.basename(node.stackline.file),
-            node.stackline.line,
-            node.stackline.name
-        )
+        if node.stackline.type == 'line':
+            row_data['node'] = '<span title="%s:%d(%s)">Line %d: </span>' % (
+                node.stackline.file,
+                node.stackline.line,
+                node.stackline.name,
+                node.stackline.line,
+            )
+        else:
+            row_data['node'] = '%s <span title="%s">%s</span>:%d(%s)' % (
+                '' if node.stackline.type == 'call' else '&lt;%s&gt;' % node.stackline.type,
+                node.stackline.file,
+                os.path.basename(node.stackline.file),
+                node.stackline.line,
+                node.stackline.name
+            )
 
-        if node.aggregate_sample_data is not None:
+        output_totals = False
+        if node.children and node.aggregate_sample_data is not None:
             row_data['aggregate_sample_data'] = self.sample_data_template % {
                 'rtime': node.aggregate_sample_data.rtime,
                 'cputime': node.aggregate_sample_data.cputime,
                 'ticks': node.aggregate_sample_data.ticks,
             }
+            output_totals = True
         else:
-            row_data['aggregate_sample_data'] = self.empty_sample_data
+            row_data['aggregate_sample_data'] = ''
 
         if node.sample_data is not None:
             row_data['node_sample_data'] = self.sample_data_template % {
@@ -986,13 +1050,18 @@ class HTMLExporter(Exporter):
                 'cputime': node.sample_data.cputime,
                 'ticks': node.sample_data.ticks,
             }
-        else:
+        elif output_totals is False:
             row_data['node_sample_data'] = self.empty_sample_data
+        else:
+            row_data['node_sample_data'] = ''
+
         if node.stackline.type == 'line':
-            row_data['code'] = self.code_template % linecache.getline(
-                node.stackline.file,
-                node.stackline.line,
-            ).rstrip()
+            row_data['code'] = self.code_template % (
+                linecache.getline(
+                    node.stackline.file,
+                    node.stackline.line,
+                ).strip() or '???'
+            )
         else:
             row_data['code'] = '' 
 
