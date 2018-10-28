@@ -851,9 +851,6 @@ class HTMLExporter(Exporter):
                         font-weight: bold;
                     }
                     .call-graph ul {
-                        border-left: 1px solid blue;
-                    }
-                    .call-graph ul:hover {
                         border-left: 1px solid lightgray;
                     }
                     .internal-node.open-node::before {
@@ -893,15 +890,89 @@ class HTMLExporter(Exporter):
                     }
                 </style>
                 <script>
-                    function toggle(parent_node_id, child_node_id) {
-                        parent_node = document.getElementById(parent_node_id);
-                        child_node = document.getElementById(child_node_id);
-                        if (child_node.classList.contains('hidden-node')) {
-                            parent_node.classList.replace('closed-node', 'open-node');
+                    function set_expansion(event, node, expansion) {
+                        var expander = node.children[0]
+                        var child_list = node.children[1]
+                        if (expansion) {
+                            expander.classList.replace('closed-node', 'open-node')
+                            child_list.classList.remove('hidden-node')
                         } else {
-                            parent_node.classList.replace('open-node', 'closed-node');
+                            expander.classList.replace('open-node', 'closed-node')
+                            child_list.classList.add('hidden-node')
                         }
-                        child_node.classList.toggle('hidden-node');
+                        if (event.ctrlKey) {
+                            if (child_list.children.length == 1) {
+                                set_expansion(event, child_list.children[0], expansion)
+                            }
+                        } else if (event.shiftKey) {
+                            // Cancel text selection
+                            document.getSelection().removeAllRanges();
+                            if (child_list.children.length) {
+                                for (var i = 0; i < child_list.children.length; ++i) {
+                                    set_expansion(event, child_list.children[i], expansion);
+                                }
+                            }
+                        }
+                    }
+                    function toggle(event, node) {
+                        var expander_node = node.children[0]
+                        if (expander_node.classList.contains('closed-node')) {
+                            set_expansion(event, node, true)
+                        } else {
+                            set_expansion(event, node, false)
+                        }
+                    }
+                    _current_hover_node = null
+                    function hover_node(event, node) {
+                        if (_current_hover_node != null) {
+                            _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid lightgray'
+                        }
+                        _current_hover_node = node
+                        _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid blue'
+                    }
+                    document.onkeypress = function (event) {
+                        if (_current_hover_node != null) {
+                            var highlightA = ''
+                            var highlightB = ''
+                            var highlight = true
+                            switch (event.key) {
+                                case '1':
+                                    highlightA = '#ffff00ff';
+                                    highlightB = '#ffff0060';
+                                    break;
+                                case '2':
+                                    highlightA = '#ff9500ff';
+                                    highlightB = '#ff950060';
+                                    break;
+                                case '3':
+                                    highlightA = '#20ff20ff';
+                                    highlightB = '#20ff2060';
+                                    break;
+                                case '4':
+                                    highlightA = '#22aaffff';
+                                    highlightB = '#22aaff60';
+                                    break;
+                                case '5':
+                                    highlightA = '#ff40ffff';
+                                    highlightB = '#ff40ff60';
+                                    break;
+                                case '0':
+                                    highlightA = '';
+                                    highlightB = '';
+                                    break;
+                                default:
+                                    highlight = false;
+                            }
+                            if (highlight) {
+                                var before = _current_hover_node.style.backgroundColor
+                                _current_hover_node.style.backgroundColor = highlightA
+                                _current_hover_node.parentNode.style.backgroundColor = highlightB
+                                if (_current_hover_node.style.backgroundColor == before) {
+                                    _current_hover_node.style.backgroundColor = ''
+                                    _current_hover_node.parentNode.style.backgroundColor = ''
+                                }
+                            }
+                        }
                     }
                 </script>
             </head>
@@ -919,10 +990,11 @@ class HTMLExporter(Exporter):
 
     row_template = """
         <li>
-            <p href="#" id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle('parent_%(row_id)s', 'child_%(row_id)s')">
+            <p href="#" id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle(event, this.parentNode)"
+                onmouseover="hover_node(event, this)">
                 <span title="%(row_stats)s">
                     %(graph)s
-                    %(percent)s %%
+                    %(percent)s%%
                     (%(total_rtime).3f s)
                 </span>
                 %(node)s
@@ -994,8 +1066,8 @@ class HTMLExporter(Exporter):
         row_data = {
             'percent': '%.1f' % rtime_percentage,
             'graph': '''
-            <span style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: red;">&nbsp;</span><span 
-                style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: blue;">&nbsp;</span>
+            <span class="percent-graph" style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: red;">&nbsp;</span><span 
+                class="percent-graph" style="display: inline-block; height: 8px; vertical-align: middle; width: %dpx; background-color: blue;">&nbsp;</span>
             ''' % (int(cpu_percentage) * 2, int(rtime_percentage - cpu_percentage) * 2),
             'row_stats': '%.3f s real / %.3f s cpu / %d ticks' % (
                 node.aggregate_sample_data.rtime,
