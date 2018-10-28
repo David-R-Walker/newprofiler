@@ -888,6 +888,9 @@ class HTMLExporter(Exporter):
                     .missing-sample {
                         background-color: #f7f7f7;
                     }
+                    .call-graph span.fileinfo {
+                        font-weight: normal;
+                    }
                 </style>
                 <script>
                     function set_expansion(event, node, expansion) {
@@ -928,7 +931,7 @@ class HTMLExporter(Exporter):
                             _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid lightgray'
                         }
                         _current_hover_node = node
-                        _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid blue'
+                        _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid black'
                     }
                     document.onkeypress = function (event) {
                         if (_current_hover_node != null) {
@@ -1090,19 +1093,19 @@ class HTMLExporter(Exporter):
             row_data['node_class'] = 'leaf-node'
 
         if node.stackline.type == 'line':
-            row_data['node'] = '<span title="%s:%d(%s)">Line %d: </span>' % (
+            row_data['node'] = '<span title="%s (%s:%d)">Line %d:</span> ' % (
+                node.stackline.name,
                 node.stackline.file,
                 node.stackline.line,
-                node.stackline.name,
                 node.stackline.line,
             )
         else:
-            row_data['node'] = '%s <span title="%s">%s</span>:%d(%s)' % (
+            row_data['node'] = '%s %s <span class="fileinfo" title="%s">(%s:%d)</span>' % (
                 '' if node.stackline.type == 'call' else '&lt;%s&gt;' % node.stackline.type,
-                node.stackline.file,
-                os.path.basename(node.stackline.file),
+                node.stackline.name,
+                node.stackline.file or '???',
+                os.path.basename(node.stackline.file) or '???',
                 node.stackline.line,
-                node.stackline.name
             )
 
         output_totals = False
