@@ -867,7 +867,7 @@ class HTMLExporter(Exporter):
                         display: inline-block;
                         float: right;
                         position: absolute;
-                        right: 0;
+                        right: 12px;
                     }
                     .samplevar {
                         display: inline-block;
@@ -926,6 +926,7 @@ class HTMLExporter(Exporter):
                         }
                     }
                     _current_hover_node = null
+                    _last_marked_node = null
                     function hover_node(event, node) {
                         if (_current_hover_node != null) {
                             _current_hover_node.parentNode.children[1].style.borderLeft = '1px solid lightgray'
@@ -963,6 +964,21 @@ class HTMLExporter(Exporter):
                                     highlightA = '';
                                     highlightB = '';
                                     break;
+                                case 'm':
+                                    var before = _current_hover_node.parentNode.style.border;
+                                    if (_last_marked_node != null) {
+                                        _last_marked_node.parentNode.style.border = '';
+                                        _last_marked_node.parentNode.style.padding = '';
+                                    }
+                                    _current_hover_node.parentNode.style.border = '2px dashed black';
+                                    _current_hover_node.parentNode.style.padding = '2px';
+                                    if (_current_hover_node.parentNode.style.border == before) {
+                                        _current_hover_node.parentNode.style.border = '';
+                                        _current_hover_node.parentNode.style.padding = '';
+                                    }
+                                    _last_marked_node = _current_hover_node;
+                                    highlight = false;
+                                    break;
                                 default:
                                     highlight = false;
                             }
@@ -986,6 +1002,7 @@ class HTMLExporter(Exporter):
                     <ul class="column-headers">
                         <li>&nbsp;<span class="sample-section">
                         <span class="samplevar">real</span><span class="samplevar">cpu</span><span class="samplevar">samples</span>
+                        </span>
                         </li>
                     </ul>
                     <ul>
@@ -993,7 +1010,7 @@ class HTMLExporter(Exporter):
 
     row_template = """
         <li>
-            <p href="#" id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle(event, this.parentNode)"
+            <p id="parent_%(row_id)s" class="%(node_class)s closed-node" onclick="toggle(event, this.parentNode)"
                 onmouseover="hover_node(event, this)">
                 <span title="%(row_stats)s">
                     %(graph)s
@@ -1059,6 +1076,7 @@ class HTMLExporter(Exporter):
         return self._count
 
     def _export_node(self, node, _level=0):
+        import cgi
         import linecache
 
         assert isinstance(node, CallGraphNode), node
@@ -1102,9 +1120,9 @@ class HTMLExporter(Exporter):
         else:
             row_data['node'] = '%s %s <span class="fileinfo" title="%s">(%s:%d)</span>' % (
                 '' if node.stackline.type == 'call' else '&lt;%s&gt;' % node.stackline.type,
-                node.stackline.name,
-                node.stackline.file or '???',
-                os.path.basename(node.stackline.file) or '???',
+                cgi.escape(node.stackline.name),
+                cgi.escape(node.stackline.file or '???'),
+                cgi.escape(os.path.basename(node.stackline.file) or '???'),
                 node.stackline.line,
             )
 
@@ -1132,10 +1150,12 @@ class HTMLExporter(Exporter):
 
         if node.stackline.type == 'line':
             row_data['code'] = self.code_template % (
-                linecache.getline(
-                    node.stackline.file,
-                    node.stackline.line,
-                ).strip() or '???'
+                cgi.escape(
+                    linecache.getline(
+                        node.stackline.file,
+                        node.stackline.line,
+                    ).strip() or '???'
+                )
             )
         else:
             row_data['code'] = '' 
