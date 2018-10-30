@@ -891,6 +891,12 @@ class HTMLExporter(Exporter):
                     .call-graph span.fileinfo {
                         font-weight: normal;
                     }
+                    kbd {
+                        font-weight: bold;
+                        border: 1px solid darkgray;
+                        padding: 1px;
+                        box-shadow: 1px 1px 2px 0 darkgray;
+                    }
                 </style>
                 <script>
                     function set_expansion(event, node, expansion) {
@@ -999,6 +1005,12 @@ class HTMLExporter(Exporter):
                 <div class="call-graph">
                     <h1>Context-Sensitive Call Graph</h1>
                     <p>Captured %d samples in %.3f s.</p>
+                    <p class="help">
+                        <kbd>Ctrl</kbd> + click: expand to next branch;
+                        <kbd>Shift</kbd> + click: expand entire branch;
+                        <kbd>1</kbd>-<kbd>5</kbd>: highlight branch;
+                        <kbd>m</kbd>: mark branch.
+                    </p>
                     <ul class="column-headers">
                         <li>&nbsp;<span class="sample-section">
                         <span class="samplevar">real</span><span class="samplevar">cpu</span><span class="samplevar">samples</span>
